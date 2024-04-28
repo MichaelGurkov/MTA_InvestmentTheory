@@ -1,0 +1,189 @@
+
+```{r load_libraries}
+
+library(tidyverse)
+
+library(xts)
+
+```
+
+# Gov bond market
+
+```{r import_data}
+
+gov_bond_holdings = read_csv(here::here("data", "gov_bond_holdings_data.csv"),
+                             show_col_types = FALSE) %>% 
+  mutate(date = as.yearmon(date))
+
+```
+
+```{r plot_market_cap}
+
+gov_bond_mcap_plot = gov_bond_holdings %>% 
+  group_by(date) %>% 
+  summarise(value = sum(value), .groups = "drop") %>% 
+  ggplot(aes(date, value)) + 
+  geom_line() + 
+  xlab(NULL) + ylab(NULL) + 
+  ggtitle("Market capitalization of Israel Gov bonds (billions ILS)")
+
+ggsave_for_presentation(gov_bond_mcap_plot,
+                        paste0(Sys.getenv("USERPROFILE"),
+                        "\\OneDrive - Bank Of Israel\\Teaching",
+                        "\\MTA\\MBA\\Investment Theory\\Lectures\\Bonds\\",
+                        "gov_bond_mcap_plot.png"))
+
+
+```
+
+```{r plot_holders}
+
+gov_bonds_holders_plot = gov_bond_holdings %>%
+  filter(year(date) == 2023) %>%
+  mutate(investor_type = as_factor(investor_type)) %>%
+  mutate(investor_type = fct_collapse(investor_type,
+    institutional_investors = c("pension_funds",
+                                "insurance_companies",
+                                "providence_funds"))) %>%
+  group_by(investor_type, date) %>%
+  summarise(value = sum(value)) %>%
+  group_by(investor_type) %>% 
+  summarise(value = mean(value)) %>% 
+  mutate(market_share = value / sum(value)) %>%
+  mutate(investor_type = str_to_title(str_replace_all(investor_type,
+                                                      "_", " "))) %>%
+  ggplot(aes(market_share, reorder(investor_type, market_share))) +
+  geom_col() +
+  scale_x_continuous(labels = scales::percent_format()) +
+  xlab(NULL) + ylab(NULL) +
+  ggtitle("Holders of Gov bonds by market share (2023 average)")
+
+
+ggsave_for_presentation(gov_bonds_holders_plot,
+                        paste0(Sys.getenv("USERPROFILE"),
+                        "\\OneDrive - Bank Of Israel\\Teaching",
+                        "\\MTA\\MBA\\Investment Theory\\Lectures\\Bonds\\",
+                        "gov_bonds_holders_plot.png"))
+
+
+```
+
+
+
+# Term structure
+
+```{r import_gilt_yields}
+
+file_name = file.choose()
+
+temp = read_xlsx(file_name, sheet = 5,skip = 3)
+
+gilt_yields = temp %>% 
+  rename(date = 1) %>% 
+  pivot_longer(-date,names_to = "years") %>% 
+  filter(complete.cases(.)) %>% 
+  mutate(date = ymd(date)) %>% 
+  mutate(years = as.numeric(years))
+
+```
+
+
+```{r}
+
+gilt_yields %>% 
+  filter(years == 30) %>% 
+  filter(as.yearmon(date) >= as.yearmon("Sep 2022") & 
+           as.yearmon(date) <= as.yearmon("Oct 2022")) %>% 
+  ggplot(aes(date, value)) + 
+  geom_line()
+
+gilt_yields %>% 
+  filter(years == 30) %>% 
+  filter(as.yearmon(date) == as.yearmon("Sep 2022")) %>% 
+  print(n = Inf)
+
+```
+
+
+
+```{r import_data}
+
+gov_bond_data = read_csv(here::here("data", "gov_bond_data.csv"),
+                         show_col_types = FALSE)
+
+us_slope_data = read_csv(here::here("data", "us_slope_data.csv"),
+                         show_col_types = FALSE) %>% 
+  mutate(t10y2y = as.numeric(t10y2y))
+
+nber_recession_dates = read_csv(here::here("data", "nber_recession_dates.csv"))
+
+nber_recession_dates = nber_recession_dates %>% 
+  filter(trough >= min(us_slope_data$date))
+
+
+israel_recessions = read_csv(here::here("data",
+                                        "israel_recessions_dates.csv")) %>% 
+  mutate(across(everything(), as.yearqtr))
+  
+
+```
+
+```{r plot_us_slope}
+
+us_slope_plot = ggplot() + 
+  geom_line(data = us_slope_data, aes(date,t10y2y)) + 
+  geom_rect(data = nber_recession_dates, aes(xmin = peak, xmax = trough,
+                                             ymin = -Inf, ymax = Inf),
+            alpha = 0.5, fill = "lightblue") + 
+  geom_hline(yintercept = 0, linetype = "dashed") + 
+  xlab(NULL) + ylab("Percent") + 
+  ggtitle("The Slope of US Yield Curve (10 year - 2 Year)") + 
+  labs(caption = "Shaded areas indicate U.S. recessions") + 
+  theme(plot.caption = element_text(hjust = 0))
+
+ggsave_for_presentation(us_slope_plot,
+                        paste0(Sys.getenv("USERPROFILE"),
+                        "\\OneDrive - Bank Of Israel\\Teaching",
+                        "\\MTA\\MBA\\Investment Theory\\Lectures\\Bonds\\",
+                        "us_slope_plot.png"))
+
+```
+
+```{r plot_israel_slope}
+
+real_slope_df = gov_bond_data %>% 
+  filter(indexation == "real") %>% 
+  select(-indexation) %>% 
+  pivot_wider(names_from = maturity,values_from = value,
+              names_prefix = "term_") %>% 
+  mutate(slope = term_10 - term_1) %>% 
+  mutate(date = as.yearmon(date)) %>% 
+  select(date, slope) %>% 
+  fill(slope, .direction = "down") %>%
+  mutate(slope_smoothed = slider::slide_dbl(slope, mean,
+                                            .before = 3,
+                                            .after = 3,
+                                            .complete = FALSE))
+
+israel_slope_plot = ggplot() + 
+  geom_line(data = real_slope_df, aes(date, slope_smoothed)) + 
+  geom_rect(data = israel_recessions, aes(xmin = start, xmax = end,
+                                          ymin = -Inf, ymax = Inf),
+            alpha = 0.5, fill = "lightblue") + 
+  geom_hline(yintercept = 0, linetype = "dashed") + 
+  xlab(NULL) + ylab("Percent") + 
+  ggtitle("The Slope of Israel Yield Curve (10 year - 1 Year, smoothed)") + 
+  labs(caption = "Shaded areas indicate Israel recessions") + 
+  theme(plot.caption = element_text(hjust = 0))
+
+rm(real_slope_df)
+
+ggsave_for_presentation(israel_slope_plot,
+                        paste0(Sys.getenv("USERPROFILE"),
+                        "\\OneDrive - Bank Of Israel\\Teaching",
+                        "\\MTA\\MBA\\Investment Theory\\Lectures\\Bonds\\",
+                        "israel_slope_plot.png"))
+
+
+```
+
